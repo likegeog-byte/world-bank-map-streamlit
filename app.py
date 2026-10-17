@@ -1,4 +1,3 @@
-import io
 from datetime import datetime
 
 import pandas as pd
@@ -22,6 +21,10 @@ INDICATORS = {
     "人均二氧化碳排放量（公噸）": "EN.ATM.CO2E.PC",
 }
 
+INDICATOR_LAST_YEARS = {
+    "EN.ATM.CO2E.PC": 2020,
+}
+
 COLOR_SCALES = {
     "黃－紅": "YlOrRd",
     "藍－綠": "GnBu",
@@ -36,7 +39,7 @@ def fetch_world_bank_data(indicator_code: str, year: int) -> pd.DataFrame:
     url = (
         "https://api.worldbank.org/v2/country/all/"
         f"indicator/{indicator_code}"
-        f"?date={year}&format=json&per_page=400"
+        f"?date={year}&format=json&per_page=400&source=2"
     )
 
     last_error = None
@@ -56,15 +59,33 @@ def fetch_world_bank_data(indicator_code: str, year: int) -> pd.DataFrame:
     payload = response.json()
 
     if not isinstance(payload, list) or len(payload) < 2:
-        raise ValueError("World Bank API 沒有回傳可用資料。")
+        raise ValueError(
+            f"World Bank API 沒有回傳可用資料（指標：{indicator_code}，年份：{year}）。"
+        )
 
     df = pd.DataFrame(payload[1])
     if df.empty:
-        raise ValueError("這個指標在所選年份沒有資料。")
+        raise ValueError(
+            f"這個指標在所選年份沒有資料（指標：{indicator_code}，年份：{year}）。"
+        )
 
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["value", "countryiso3code"])
-    df = df[df["region"].apply(lambda x: isinstance(x, dict) and x.get("value") != "Aggregates")]
+
+    # World Bank API 的 region 欄位在不同回應版本中可能是字典或文字。
+    # 只排除區域加總資料，避免因欄位格式不同而誤刪除所有國家。
+    if "region" in df.columns:
+        region_values = df["region"].apply(
+            lambda item: item.get("value")
+            if isinstance(item, dict)
+            else str(item)
+        )
+        df = df[region_values != "Aggregates"]
+
+    if df.empty:
+        raise ValueError(
+            f"這個指標在所選年份沒有可繪製的國家資料（指標：{indicator_code}，年份：{year}）。"
+        )
 
     return df[["country", "countryiso3code", "date", "value"]].rename(
         columns={
@@ -95,11 +116,14 @@ with st.sidebar:
     indicator_name = st.selectbox("選擇指標", list(INDICATORS.keys()))
     indicator_code = INDICATORS[indicator_name]
 
+    latest_year = INDICATOR_LAST_YEARS.get(indicator_code, datetime.now().year)
+    default_year = min(2022, latest_year)
+
     year = st.slider(
         "選擇年份",
         min_value=1960,
-        max_value=datetime.now().year,
-        value=2022,
+        max_value=latest_year,
+        value=default_year,
     )
 
     color_name = st.selectbox("選擇色階", list(COLOR_SCALES.keys()))
