@@ -1,0 +1,165 @@
+import io
+from datetime import datetime
+
+import pandas as pd
+import plotly.express as px
+import requests
+import streamlit as st
+
+
+st.set_page_config(
+    page_title="World Bank Global Map",
+    page_icon="🌍",
+    layout="wide",
+)
+
+
+INDICATORS = {
+    "人口總數（人）": "SP.POP.TOTL",
+    "GDP per capita（現價美元）": "NY.GDP.PCAP.CD",
+    "預期壽命（歲）": "SP.DYN.LE00.IN",
+    "網路使用率（%）": "IT.NET.USER.ZS",
+    "人均二氧化碳排放量（公噸）": "EN.ATM.CO2E.PC",
+}
+
+COLOR_SCALES = {
+    "黃－紅": "YlOrRd",
+    "藍－綠": "GnBu",
+    "紫－黃": "Purples",
+    "藍－紅": "RdBu",
+}
+
+
+@st.cache_data(ttl=3600)
+def fetch_world_bank_data(indicator_code: str, year: int) -> pd.DataFrame:
+    """取得指定 World Bank 指標與年份的國家資料。"""
+    url = (
+        "https://api.worldbank.org/v2/country/all/"
+        f"indicator/{indicator_code}"
+        f"?date={year}&format=json&per_page=400"
+    )
+
+    response = requests.get(url, timeout=30)
+    response.raise_for_status()
+    payload = response.json()
+
+    if not isinstance(payload, list) or len(payload) < 2:
+        raise ValueError("World Bank API 沒有回傳可用資料。")
+
+    df = pd.DataFrame(payload[1])
+    if df.empty:
+        raise ValueError("這個指標在所選年份沒有資料。")
+
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["value", "countryiso3code"])
+    df = df[df["region"].apply(lambda x: isinstance(x, dict) and x.get("value") != "Aggregates")]
+
+    return df[["country", "countryiso3code", "date", "value"]].rename(
+        columns={
+            "country": "國家",
+            "countryiso3code": "ISO3",
+            "date": "年份",
+            "value": "數值",
+        }
+    )
+
+
+def format_value(value: float) -> str:
+    if pd.isna(value):
+        return "無資料"
+    if abs(value) >= 1_000_000:
+        return f"{value:,.0f}"
+    if abs(value) >= 100:
+        return f"{value:,.1f}"
+    return f"{value:,.2f}"
+
+
+st.title("🌍 World Bank 全球面量圖探索器")
+st.caption("利用 World Bank Indicators API，自動取得資料並繪製互動式世界地圖。")
+
+with st.sidebar:
+    st.header("地圖設定")
+
+    indicator_name = st.selectbox("選擇指標", list(INDICATORS.keys()))
+    indicator_code = INDICATORS[indicator_name]
+
+    year = st.slider(
+        "選擇年份",
+        min_value=1960,
+        max_value=datetime.now().year,
+        value=2022,
+    )
+
+    color_name = st.selectbox("選擇色階", list(COLOR_SCALES.keys()))
+    color_scale = COLOR_SCALES[color_name]
+
+    st.divider()
+    st.markdown("**目前使用的指標代碼**")
+    st.code(indicator_code)
+    st.markdown(
+        "[查看 World Bank 指標資料庫](https://data.worldbank.org/indicator)"
+    )
+
+try:
+    with st.spinner("正在向 World Bank 取得資料……"):
+        data = fetch_world_bank_data(indicator_code, year)
+
+    fig = px.choropleth(
+        data,
+        locations="ISO3",
+        color="數值",
+        hover_name="國家",
+        hover_data={"ISO3": True, "數值": ":,.2f"},
+        color_continuous_scale=color_scale,
+        projection="natural earth",
+        labels={"數值": indicator_name},
+        title=f"{year} 年各國{indicator_name}",
+    )
+    fig.update_layout(
+        margin={"r": 0, "t": 70, "l": 0, "b": 0},
+        coloraxis_colorbar={"title": indicator_name},
+    )
+
+    st.plotly_chart(fig, use_container_width=True)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("有資料的國家／地區", f"{len(data)}")
+    c2.metric("最高值", data.loc[data["數值"].idxmax(), "國家"])
+    c3.metric("最低值", data.loc[data["數值"].idxmin(), "國家"])
+
+    with st.expander("查看原始資料與統計摘要"):
+        st.dataframe(
+            data.sort_values("數值", ascending=False),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.write(
+            {
+                "平均值": format_value(data["數值"].mean()),
+                "中位數": format_value(data["數值"].median()),
+                "標準差": format_value(data["數值"].std()),
+            }
+        )
+
+    csv_data = data.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        label="下載目前資料 CSV",
+        data=csv_data,
+        file_name=f"world_bank_{indicator_code}_{year}.csv",
+        mime="text/csv",
+    )
+
+    st.info(
+        "地理探究提示：請不要只描述顏色。請檢查資料來源、年份、缺漏值、"
+        "分類方式，以及這張圖能支持或不能支持哪些地理解釋。"
+    )
+
+except requests.RequestException as error:
+    st.error(f"無法連線 World Bank API：{error}")
+except (ValueError, KeyError) as error:
+    st.error(f"資料處理錯誤：{error}")
+
+st.caption(
+    "資料來源：World Bank Indicators API。最後更新時間以 World Bank API 為準。"
+)
