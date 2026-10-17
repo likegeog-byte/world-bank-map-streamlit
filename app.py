@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import requests
@@ -30,6 +31,12 @@ COLOR_SCALES = {
     "藍－綠": "GnBu",
     "紫－黃": "Purples",
     "藍－紅": "RdBu",
+}
+
+COLOR_MODES = {
+    "線性分布（原始數值）": "linear",
+    "對數分布（適合人口與 GDP）": "log",
+    "五級分組（適合地圖判讀）": "quantile",
 }
 
 
@@ -129,6 +136,14 @@ with st.sidebar:
     color_name = st.selectbox("選擇色階", list(COLOR_SCALES.keys()))
     color_scale = COLOR_SCALES[color_name]
 
+    color_mode_name = st.selectbox(
+        "選擇數值呈現方式",
+        list(COLOR_MODES.keys()),
+        index=1,
+        help="人口與 GDP 的國家差距很大，使用對數分布通常比較容易看出空間差異。",
+    )
+    color_mode = COLOR_MODES[color_mode_name]
+
     st.divider()
     st.markdown("**目前使用的指標代碼**")
     st.code(indicator_code)
@@ -140,17 +155,53 @@ try:
     with st.spinner("正在向 World Bank 取得資料……"):
         data = fetch_world_bank_data(indicator_code, year)
 
-    fig = px.choropleth(
-        data,
-        locations="ISO3",
-        color="數值",
-        hover_name="國家",
-        hover_data={"ISO3": True, "數值": ":,.2f"},
-        color_continuous_scale=color_scale,
-        projection="natural earth",
-        labels={"數值": indicator_name},
-        title=f"{year} 年各國{indicator_name}",
-    )
+    map_data = data.copy()
+
+    if color_mode == "log":
+        # 對數轉換可以避免少數極大值壓縮其他國家的顏色差異。
+        map_data["繪圖值"] = np.log10(map_data["數值"].clip(lower=1))
+        color_label = f"log10（{indicator_name}）"
+        fig = px.choropleth(
+            map_data,
+            locations="ISO3",
+            color="繪圖值",
+            hover_name="國家",
+            hover_data={"ISO3": True, "數值": ":,.2f", "繪圖值": False},
+            color_continuous_scale=color_scale,
+            projection="natural earth",
+            labels={"繪圖值": color_label},
+            title=f"{year} 年各國{indicator_name}（對數分布）",
+        )
+    elif color_mode == "quantile":
+        map_data["分組"] = pd.qcut(
+            map_data["數值"].rank(method="first"),
+            q=5,
+            labels=["第 1 級（低）", "第 2 級", "第 3 級", "第 4 級", "第 5 級（高）"],
+        )
+        fig = px.choropleth(
+            map_data,
+            locations="ISO3",
+            color="分組",
+            hover_name="國家",
+            hover_data={"ISO3": True, "數值": ":,.2f", "分組": True},
+            color_discrete_sequence=px.colors.sequential.YlOrRd,
+            category_orders={"分組": ["第 1 級（低）", "第 2 級", "第 3 級", "第 4 級", "第 5 級（高）"]},
+            projection="natural earth",
+            labels={"分組": "五級分組"},
+            title=f"{year} 年各國{indicator_name}（五級分組）",
+        )
+    else:
+        fig = px.choropleth(
+            map_data,
+            locations="ISO3",
+            color="數值",
+            hover_name="國家",
+            hover_data={"ISO3": True, "數值": ":,.2f"},
+            color_continuous_scale=color_scale,
+            projection="natural earth",
+            labels={"數值": indicator_name},
+            title=f"{year} 年各國{indicator_name}（線性分布）",
+        )
     fig.update_layout(
         margin={"r": 0, "t": 70, "l": 0, "b": 0},
         coloraxis_colorbar={"title": indicator_name},
