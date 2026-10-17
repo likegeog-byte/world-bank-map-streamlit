@@ -39,8 +39,20 @@ def fetch_world_bank_data(indicator_code: str, year: int) -> pd.DataFrame:
         f"?date={year}&format=json&per_page=400"
     )
 
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
+    last_error = None
+    for attempt in range(2):
+        try:
+            response = requests.get(
+                url,
+                timeout=(15, 90),
+                headers={"User-Agent": "WorldBank-Map-Workshop/1.0"},
+            )
+            response.raise_for_status()
+            break
+        except requests.RequestException as error:
+            last_error = error
+            if attempt == 1:
+                raise last_error
     payload = response.json()
 
     if not isinstance(payload, list) or len(payload) < 2:
@@ -156,7 +168,12 @@ try:
     )
 
 except requests.RequestException as error:
-    st.error(f"無法連線 World Bank API：{error}")
+    st.error(
+        "無法在限定時間內連線 World Bank API。這通常是遠端 API 暫時忙碌或 "
+        "Streamlit Cloud 網路逾時，請稍候重新整理頁面。"
+    )
+    with st.expander("技術資訊"):
+        st.code(str(error))
 except (ValueError, KeyError) as error:
     st.error(f"資料處理錯誤：{error}")
 
