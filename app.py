@@ -94,6 +94,13 @@ def fetch_world_bank_data(indicator_code: str, year: int) -> pd.DataFrame:
             f"這個指標在所選年份沒有可繪製的國家資料（指標：{indicator_code}，年份：{year}）。"
         )
 
+    # World Bank API 的 country 欄位通常是字典，先轉成可顯示的國家名稱文字。
+    df["country"] = df["country"].apply(
+        lambda item: item.get("value")
+        if isinstance(item, dict)
+        else str(item)
+    )
+
     return df[["country", "countryiso3code", "date", "value"]].rename(
         columns={
             "country": "國家",
